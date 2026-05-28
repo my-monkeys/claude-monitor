@@ -1,8 +1,12 @@
 # Claude Monitor
 
+<p align="center">
+  <img src="screenshot.png" alt="Claude Monitor menu bar dropdown" width="320" />
+</p>
+
 A lightweight macOS menu bar app that monitors Claude Code instances, MCP servers, and PostCSS workers in real time — and auto-kills runaway processes before they crash your Mac.
 
-Built after spending an afternoon debugging a [`@tailwindcss/postcss` memory leak](https://blog.my-monkey.fr/posts/mcp-servers-crash-mac/) that spawned 2261 workers in 50 seconds.
+> 📖 **Read the full story**: [How I tracked down a memory leak that crashed my Mac 5 times in 2 hours](https://blog.my-monkey.fr/posts/mcp-servers-crash-mac/) — the `@tailwindcss/postcss` bug that spawned 2261 workers in 50 seconds.
 
 ## Features
 
