@@ -45,7 +45,9 @@ final class ProcessScanner {
             let cols = line.split(separator: " ", maxSplits: 5, omittingEmptySubsequences: true)
             guard cols.count >= 6 else { continue }
             let pid = Int32(cols[0]) ?? 0
-            let cmd = String(cols[5...].joined(separator: " "))
+            // After maxSplits, the remainder keeps ps's column padding (the `user` field is
+            // space-padded), so trim — otherwise cmd is " …claude …" and hasPrefix fails.
+            let cmd = cols[5...].joined(separator: " ").trimmingCharacters(in: .whitespaces)
             rows.append((
                 pid: pid,
                 ppid: Int32(cols[1]) ?? 0,
