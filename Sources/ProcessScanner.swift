@@ -30,9 +30,32 @@ struct SystemSnapshot {
 
 final class ProcessScanner {
     static func scan() -> SystemSnapshot {
-        let psOutput = shell("ps aux")
+        // -o command gives full args (needed to classify + spot Claude roots); ppid drives
+        // MCP detection by parentage. Order matters: command is last (it contains spaces).
+        let psOutput = shell("ps -axo pid,ppid,%cpu,rss,user,command")
         let lines = psOutput.components(separatedBy: "\n").dropFirst()
         let currentUser = NSUserName()
+
+        // First pass: parse every row and collect the Claude session roots, since a child
+        // can be listed before its parent.
+        var rows: [(pid: Int32, ppid: Int32, cpu: Double, memMB: Double, user: String, cmd: String)] = []
+        var claudeRoots = Set<Int32>()
+
+        for line in lines {
+            let cols = line.split(separator: " ", maxSplits: 5, omittingEmptySubsequences: true)
+            guard cols.count >= 6 else { continue }
+            let pid = Int32(cols[0]) ?? 0
+            let cmd = String(cols[5...].joined(separator: " "))
+            rows.append((
+                pid: pid,
+                ppid: Int32(cols[1]) ?? 0,
+                cpu: Double(cols[2]) ?? 0,
+                memMB: (Double(cols[3]) ?? 0) / 1024,
+                user: String(cols[4]),
+                cmd: cmd
+            ))
+            if isClaudeRoot(cmd) { claudeRoots.insert(pid) }
+        }
 
         var totalRSS: Double = 0
         var procCount = 0
@@ -40,36 +63,30 @@ final class ProcessScanner {
         var mcp: [ProcessInfo] = []
         var appMem: [String: (count: Int, mem: Double)] = [:]
 
-        for line in lines {
-            let cols = line.split(separator: " ", maxSplits: 10, omittingEmptySubsequences: true)
-            guard cols.count >= 11 else { continue }
+        for r in rows {
+            // Per-user process count vs kern.maxprocperuid — the ceiling a runaway worker
+            // swarm pins before the Mac can no longer fork (cf. the PostCSS incident).
+            if r.user == currentUser { procCount += 1 }
+            totalRSS += r.memMB
 
-            // Per-user process count vs kern.maxprocperuid — the limit a runaway
-            // worker swarm hits before the Mac can no longer fork (cf. the PostCSS incident).
-            if cols[0] == currentUser { procCount += 1 }
+            let proc = ProcessInfo(id: r.pid, name: classify(r.cmd), cpu: r.cpu, memMB: r.memMB, command: String(r.cmd.prefix(120)))
 
-            let pid = Int32(cols[1]) ?? 0
-            let cpu = Double(cols[2]) ?? 0
-            let rssKB = Double(cols[5]) ?? 0
-            let memMB = rssKB / 1024
-            let cmd = String(cols[10...].joined(separator: " "))
-
-            totalRSS += memMB
-
-            let proc = ProcessInfo(id: pid, name: classify(cmd), cpu: cpu, memMB: memMB, command: String(cmd.prefix(120)))
-
-            if cmd.contains("claude") && !cmd.contains("zsh") && !cmd.contains("watchdog") && !cmd.contains("ClaudeMonitor") {
+            if r.cmd.contains("claude") && !r.cmd.contains("zsh") && !r.cmd.contains("watchdog") && !r.cmd.contains("ClaudeMonitor") {
                 claude.append(proc)
             }
 
-            if cmd.contains("npm exec") || cmd.contains("mcp run") || cmd.contains("mcp-server") || cmd.contains("language-server") {
+            // MCP servers are the persistent processes a Claude session spawns directly.
+            // Detecting by parentage (not by name) catches custom-named servers like
+            // vocast-manager and dedupes launcher+child pairs to one row per server.
+            // The session's non-MCP children (caffeinate, Bash-tool shells, LSPs) are excluded.
+            if claudeRoots.contains(r.ppid) && !isAuxiliaryChild(r.cmd) {
                 mcp.append(proc)
             }
 
-            if memMB > 10 {
-                let appName = classify(cmd)
+            if r.memMB > 10 {
+                let appName = classify(r.cmd)
                 let existing = appMem[appName] ?? (count: 0, mem: 0)
-                appMem[appName] = (count: existing.count + 1, mem: existing.mem + memMB)
+                appMem[appName] = (count: existing.count + 1, mem: existing.mem + r.memMB)
             }
         }
 
@@ -102,6 +119,23 @@ final class ProcessScanner {
     static func killAll(pids: [Int32]) {
         let pidStr = pids.map(String.init).joined(separator: " ")
         shell("kill -9 \(pidStr)")
+    }
+
+    /// A Claude Code session root — the `claude` CLI itself, not the desktop app or this monitor.
+    private static func isClaudeRoot(_ cmd: String) -> Bool {
+        (cmd == "claude" || cmd.hasPrefix("claude ")) && !cmd.contains("Claude.app") && !cmd.contains("ClaudeMonitor")
+    }
+
+    /// Children a Claude session spawns that are NOT MCP servers: the keep-awake helper,
+    /// Bash-tool shells, and editor/LSP toolchains.
+    private static func isAuxiliaryChild(_ cmd: String) -> Bool {
+        let exe = cmd.split(separator: " ").first.map(String.init) ?? cmd
+        let base = exe.split(separator: "/").last.map(String.init) ?? exe
+        if base == "caffeinate" || base == "zsh" || base == "bash" || base == "sh" { return true }
+        if cmd.contains(" -c ") { return true }               // Bash tool runs `/bin/zsh -c …`
+        let lc = cmd.lowercased()
+        if lc.contains("xcode.app") || lc.contains("sourcekit") { return true }
+        return false
     }
 
     private static func classify(_ cmd: String) -> String {
