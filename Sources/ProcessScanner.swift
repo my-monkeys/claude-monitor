@@ -11,32 +11,42 @@ struct ProcessInfo: Identifiable {
 struct SystemSnapshot {
     let totalRAM: Double
     let swapUsed: Double
+    let procCount: Int
+    let procLimit: Int
+    let diskFreeGB: Double
+    let diskTotalGB: Double
     let claudeProcesses: [ProcessInfo]
     let mcpProcesses: [ProcessInfo]
-    let postcssProcesses: [ProcessInfo]
     let topApps: [(name: String, count: Int, memMB: Double)]
 
     var claudeCount: Int { claudeProcesses.count }
     var mcpCount: Int { mcpProcesses.count }
-    var postcssCount: Int { postcssProcesses.count }
     var totalMCPMemMB: Double { mcpProcesses.reduce(0) { $0 + $1.memMB } }
     var totalClaudeMemMB: Double { claudeProcesses.reduce(0) { $0 + $1.memMB } }
+
+    /// Process count as a fraction of the per-user limit (0...1).
+    var procFraction: Double { procLimit > 0 ? Double(procCount) / Double(procLimit) : 0 }
 }
 
 final class ProcessScanner {
     static func scan() -> SystemSnapshot {
         let psOutput = shell("ps aux")
         let lines = psOutput.components(separatedBy: "\n").dropFirst()
+        let currentUser = NSUserName()
 
         var totalRSS: Double = 0
+        var procCount = 0
         var claude: [ProcessInfo] = []
         var mcp: [ProcessInfo] = []
-        var postcss: [ProcessInfo] = []
         var appMem: [String: (count: Int, mem: Double)] = [:]
 
         for line in lines {
             let cols = line.split(separator: " ", maxSplits: 10, omittingEmptySubsequences: true)
             guard cols.count >= 11 else { continue }
+
+            // Per-user process count vs kern.maxprocperuid — the limit a runaway
+            // worker swarm hits before the Mac can no longer fork (cf. the PostCSS incident).
+            if cols[0] == currentUser { procCount += 1 }
 
             let pid = Int32(cols[1]) ?? 0
             let cpu = Double(cols[2]) ?? 0
@@ -56,10 +66,6 @@ final class ProcessScanner {
                 mcp.append(proc)
             }
 
-            if cmd.contains("postcss") {
-                postcss.append(proc)
-            }
-
             if memMB > 10 {
                 let appName = classify(cmd)
                 let existing = appMem[appName] ?? (count: 0, mem: 0)
@@ -69,6 +75,7 @@ final class ProcessScanner {
 
         let swapLine = shell("sysctl vm.swapusage")
         let swapUsed = extractSwapMB(from: swapLine)
+        let disk = diskUsage()
 
         let topApps = appMem
             .map { (name: $0.key, count: $0.value.count, memMB: $0.value.mem) }
@@ -78,9 +85,12 @@ final class ProcessScanner {
         return SystemSnapshot(
             totalRAM: totalRSS / 1024,
             swapUsed: swapUsed,
+            procCount: procCount,
+            procLimit: maxProcPerUID(),
+            diskFreeGB: disk.freeGB,
+            diskTotalGB: disk.totalGB,
             claudeProcesses: claude,
             mcpProcesses: mcp,
-            postcssProcesses: postcss,
             topApps: Array(topApps)
         )
     }
@@ -100,7 +110,6 @@ final class ProcessScanner {
         if cmd.contains("Beeper") { return "Beeper" }
         if cmd.contains("Chrome") { return "Chrome" }
         if cmd.contains("Warp") { return "Warp" }
-        if cmd.contains("postcss") { return "PostCSS" }
         if cmd.contains("next-server") { return "NextServer" }
         if cmd.contains("npm exec firebase") { return "MCP:firebase" }
         if cmd.contains("npm exec") && cmd.contains("playwright") { return "MCP:playwright" }
@@ -129,6 +138,26 @@ final class ProcessScanner {
         let after = line[range.upperBound...]
         let numStr = after.prefix(while: { $0.isNumber || $0 == "." })
         return Double(numStr) ?? 0
+    }
+
+    /// Per-user process cap (kern.maxprocperuid). Returns 0 if it can't be read.
+    private static func maxProcPerUID() -> Int {
+        Int(shell("sysctl -n kern.maxprocperuid").trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// Free / total space on the volume holding $HOME, in decimal GB (matches Finder).
+    /// `volumeAvailableCapacityForImportantUsage` is purgeable-aware, like Finder's "Available".
+    private static func diskUsage() -> (freeGB: Double, totalGB: Double) {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        guard let values = try? url.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey,
+            .volumeTotalCapacityKey,
+        ]) else { return (0, 0) }
+
+        let bytesPerGB = 1_000_000_000.0
+        let free = Double(values.volumeAvailableCapacityForImportantUsage ?? 0) / bytesPerGB
+        let total = Double(values.volumeTotalCapacity ?? 0) / bytesPerGB
+        return (free, total)
     }
 
     @discardableResult

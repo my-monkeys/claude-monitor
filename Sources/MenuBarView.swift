@@ -6,8 +6,14 @@ struct MenuBarView: View {
     var body: some View {
         VStack(spacing: 0) {
             ramHeader
+            Divider()
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+            diskRow
+            Divider()
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
             statsRow
-                .padding(.top, 10)
             Divider()
                 .padding(.vertical, 8)
                 .padding(.horizontal, 16)
@@ -98,6 +104,48 @@ struct MenuBarView: View {
         .padding(.horizontal, 16)
     }
 
+    // MARK: - Disk Row
+
+    private var diskRow: some View {
+        VStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Image(systemName: "internaldrive")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(String(format: "%.0f", monitor.snapshot.diskFreeGB)) GB")
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .foregroundStyle(monitor.diskColor)
+                Text("free")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("/ \(String(format: "%.0f", monitor.snapshot.diskTotalGB)) GB")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            // Disk bar: used / total
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(.quaternary)
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(monitor.diskColor.gradient)
+                        .frame(width: geo.size.width * diskUsedFraction)
+                }
+            }
+            .frame(height: 6)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var diskUsedFraction: CGFloat {
+        let total = monitor.snapshot.diskTotalGB
+        guard total > 0 else { return 0 }
+        let used = max(0, total - monitor.snapshot.diskFreeGB)
+        return CGFloat(min(used / total, 1.0))
+    }
+
     // MARK: - Stats Row
 
     private var statsRow: some View {
@@ -105,28 +153,32 @@ struct MenuBarView: View {
             statCell(
                 value: monitor.snapshot.claudeCount,
                 label: "Claude",
-                mem: monitor.snapshot.totalClaudeMemMB,
+                detail: memDetail(monitor.snapshot.totalClaudeMemMB),
                 color: .green
             )
             statDivider
             statCell(
                 value: monitor.snapshot.mcpCount,
                 label: "MCP",
-                mem: monitor.snapshot.totalMCPMemMB,
+                detail: memDetail(monitor.snapshot.totalMCPMemMB),
                 color: .blue
             )
             statDivider
             statCell(
-                value: monitor.snapshot.postcssCount,
-                label: "PostCSS",
-                mem: monitor.snapshot.postcssProcesses.reduce(0) { $0 + $1.memMB },
-                color: monitor.snapshot.postcssCount > 5 ? .red : .secondary
+                value: monitor.snapshot.procCount,
+                label: "Procs",
+                detail: monitor.snapshot.procLimit > 0 ? "/\(monitor.snapshot.procLimit)" : nil,
+                color: monitor.procColor
             )
         }
         .padding(.horizontal, 16)
     }
 
-    private func statCell(value: Int, label: String, mem: Double, color: Color) -> some View {
+    private func memDetail(_ mem: Double) -> String? {
+        mem > 1 ? "\(String(format: "%.0f", mem))M" : nil
+    }
+
+    private func statCell(value: Int, label: String, detail: String?, color: Color) -> some View {
         VStack(spacing: 1) {
             Text("\(value)")
                 .font(.system(.title2, design: .rounded, weight: .bold))
@@ -134,8 +186,8 @@ struct MenuBarView: View {
             Text(label)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.secondary)
-            if mem > 1 {
-                Text("\(String(format: "%.0f", mem))M")
+            if let detail {
+                Text(detail)
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
@@ -184,7 +236,6 @@ struct MenuBarView: View {
     }
 
     private func barColor(for name: String) -> Color {
-        if name.contains("PostCSS") { return .red }
         if name.contains("Claude") { return .green }
         if name.contains("MCP") { return .blue }
         if name.contains("Dia") { return .purple }
@@ -195,25 +246,6 @@ struct MenuBarView: View {
 
     private var killActions: some View {
         VStack(spacing: 6) {
-            if monitor.snapshot.postcssCount > 0 {
-                Button {
-                    monitor.killAllPostCSS()
-                } label: {
-                    HStack {
-                        Image(systemName: "xmark.circle.fill")
-                        Text("Kill \(monitor.snapshot.postcssCount) PostCSS")
-                        Spacer()
-                    }
-                    .font(.system(.caption, design: .monospaced, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 10)
-                    .background(.red.gradient, in: RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 16)
-            }
-
             if monitor.snapshot.mcpCount > 10 {
                 Button {
                     monitor.killAllMCP()
@@ -250,16 +282,13 @@ struct MenuBarView: View {
             if monitor.autoKillEnabled {
                 VStack(spacing: 4) {
                     HStack {
-                        Text("Workers")
+                        Text("Procs")
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(width: 55, alignment: .leading)
-                        Slider(value: Binding(
-                            get: { Double(monitor.autoKillWorkerThreshold) },
-                            set: { monitor.autoKillWorkerThreshold = Int($0) }
-                        ), in: 5...100, step: 5)
-                        .controlSize(.mini)
-                        Text("\(monitor.autoKillWorkerThreshold)")
+                        Slider(value: $monitor.autoKillProcPercent, in: 50...95, step: 5)
+                            .controlSize(.mini)
+                        Text("\(String(format: "%.0f", monitor.autoKillProcPercent))%")
                             .font(.system(.caption, design: .monospaced, weight: .medium))
                             .frame(width: 30, alignment: .trailing)
                     }

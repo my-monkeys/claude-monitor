@@ -19,21 +19,26 @@ struct ClaudeMonitorApp: App {
 final class MonitorViewModel: ObservableObject {
     @Published var snapshot = SystemSnapshot(
         totalRAM: 0, swapUsed: 0,
-        claudeProcesses: [], mcpProcesses: [], postcssProcesses: [],
+        procCount: 0, procLimit: 0,
+        diskFreeGB: 0, diskTotalGB: 0,
+        claudeProcesses: [], mcpProcesses: [],
         topApps: []
     )
     @Published var autoKillEnabled = true
     @Published var autoKillThresholdGB: Double = 20
-    @Published var autoKillWorkerThreshold: Int = 20
+    /// Auto-kill trigger as a percentage of the per-user process limit.
+    @Published var autoKillProcPercent: Double = 80
     @Published var lastKillEvent: String?
+
+    /// Process count fraction above which we surface a menu-bar warning.
+    private let procWarnFraction = 0.85
 
     private var timer: Timer?
 
     var menuBarText: String {
         let c = snapshot.claudeCount
         let m = snapshot.mcpCount
-        let p = snapshot.postcssCount
-        if p > 5 { return "⚠️ \(p) PostCSS" }
+        if snapshot.procFraction > procWarnFraction { return "⚠️ \(snapshot.procCount) procs" }
         return "🤖\(c) 🔌\(m)"
     }
 
@@ -64,6 +69,19 @@ final class MonitorViewModel: ObservableObject {
         return .green
     }
 
+    var procColor: Color {
+        let f = snapshot.procFraction
+        if f > 0.85 { return .red }
+        if f > 0.6 { return .orange }
+        return .green
+    }
+
+    var diskColor: Color {
+        if snapshot.diskFreeGB < 10 { return .red }
+        if snapshot.diskFreeGB < 30 { return .orange }
+        return .green
+    }
+
     init() {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -83,14 +101,6 @@ final class MonitorViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.refresh() }
     }
 
-    func killAllPostCSS() {
-        let pids = snapshot.postcssProcesses.map(\.id)
-        guard !pids.isEmpty else { return }
-        ProcessScanner.killAll(pids: pids)
-        lastKillEvent = "Killed \(pids.count) PostCSS workers"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.refresh() }
-    }
-
     func killAllMCP() {
         let pids = snapshot.mcpProcesses.map(\.id)
         guard !pids.isEmpty else { return }
@@ -101,13 +111,15 @@ final class MonitorViewModel: ObservableObject {
 
     private func checkAutoKill() {
         guard autoKillEnabled else { return }
-        if snapshot.postcssCount > autoKillWorkerThreshold || snapshot.totalRAM > autoKillThresholdGB {
-            let pcPids = snapshot.postcssProcesses.map(\.id)
-            if !pcPids.isEmpty {
-                ProcessScanner.killAll(pids: pcPids)
-                lastKillEvent = "Auto-killed \(pcPids.count) PostCSS @ \(String(format: "%.1f", snapshot.totalRAM))GB"
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.refresh() }
-            }
-        }
+        let procTrigger = snapshot.procLimit > 0
+            && snapshot.procCount > Int(autoKillProcPercent / 100 * Double(snapshot.procLimit))
+        guard procTrigger || snapshot.totalRAM > autoKillThresholdGB else { return }
+
+        // The disposable worker swarm we can safely reap: npm/MCP servers.
+        let pids = snapshot.mcpProcesses.map(\.id)
+        guard !pids.isEmpty else { return }
+        ProcessScanner.killAll(pids: pids)
+        lastKillEvent = "Auto-killed \(pids.count) MCP @ \(snapshot.procCount) procs"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.refresh() }
     }
 }
