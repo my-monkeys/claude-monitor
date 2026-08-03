@@ -50,6 +50,13 @@ The app runs `ps aux` every 5 seconds, classifies processes by name, counts the 
 
 No telemetry, no network, no dependencies beyond Apple's SwiftUI/AppKit.
 
+## Also from My-Monkey
+
+Two other free, open-source apps from the same collective:
+
+- 🎙️ **[OpenSuperWhisper](https://opensuperwhisper.com)** — voice dictation for macOS. Hold a shortcut, speak, release, and the text lands in whatever app you're in. Four engines, three of them fully on-device, no subscription. ([source](https://github.com/my-monkeys/OpenSuperWhisper))
+- 🐒 **[Desktop Monkey](https://desktop-monkey.my-monkey.fr)** — a pixel-art monkey that lives on your desktop and follows your cursor around. Windows & macOS, one 6 MB file, no account. ([source](https://github.com/my-monkeys/desktop-monkey))
+
 ## License
 
 MIT — do whatever.
