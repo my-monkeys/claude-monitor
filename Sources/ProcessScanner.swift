@@ -147,6 +147,8 @@ final class ProcessScanner {
         if cmd.contains("Chrome") { return "Chrome" }
         if cmd.contains("Warp") { return "Warp" }
         if cmd.contains("next-server") { return "NextServer" }
+        if cmd.contains("google-play-mcp") { return "MCP:google-play" }
+        if cmd.contains("appstore-connect-mcp") { return "MCP:appstore" }
         if cmd.contains("npm exec firebase") { return "MCP:firebase" }
         if cmd.contains("npm exec") && cmd.contains("playwright") { return "MCP:playwright" }
         if cmd.contains("npm exec") && cmd.contains("clockify") { return "MCP:clockify" }
